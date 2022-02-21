@@ -1,0 +1,266 @@
+1.    Create a control node (ansible instance) by using Cloud Formation Service on AWS.
+
+      a.  We will first create an instance to use as control node which is ansible installed.
+      
+      b.  Ansible is pythonic and its modules are also written in python. So,to work with AWS modules in Ansible, 
+we need to download and install the following specific prerequisite items on the machine when creating
+our Ansible Control machine. (written on Ansible Documatation) 
+
+         (1) boto
+         (2) boto3 >= 1.15.0
+         (3) botocore >= 1.18.0
+         (4) python >= 2.6
+         (5) python >= 3.6
+
+         The Boto, boto3 and botocote are as a customer-contributed library to help developers build Python-based applications
+in the cloud, converting application programming interface (API) responses from AWS into Python classes.
+
+      c. So after all these explanations, what we will do is create an EC2 using AWS Cloud Formation Service on AWS to use as a control
+node (ansible instance).Let's look at the cloud formation template below which named is "CloudFormationTemplateForAnsibleInstance.yml"
+
+```bash
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: >
+  This template aims to create an ubuntu instance on AWS with ansible installed on it.
+
+Parameters:
+  KeyPairName:
+    Description: ali_ilk_key.pem # chance it with your own keyname
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must one of the existing EC2 KeyPair
+
+Resources:
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Amazon Linux machine
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+  ServerHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0e472ba40eb589f49 # copy it from AWS EC2 Consol
+      InstanceType: t2.micro # Change it according to the machine you choose.
+      KeyName: !Ref KeyPairName
+      SecurityGroupIds:
+        - !Ref ServerSecurityGroup
+      Tags:                
+        -                        
+          Key: Name
+          Value: !Sub ${AWS::StackName}  
+      UserData: # We install specific prerequisite items on the machine during creating our Ansible Control machine.
+        Fn::Base64: 
+          !Sub |
+            #! /bin/bash
+            apt-get update
+            apt-add-repository -y ppa:ansible/ansible
+            apt-get update 
+            apt-get install -y ansible
+            apt install python-pip -y
+            pip install boto boto3
+            apt-get install python-boto -y
+            pip install --upgrade requests==2.20.1
+
+            
+Outputs:
+  WebsiteURL:
+    Value: !Sub 
+      - http://${PublicAddress}
+      - PublicAddress: !GetAtt ServerHost.PublicDnsName
+    Description: Control Node (Ansible Instance)
+```
+      d. Upload the above cloud formation template to the AWS CloudFormation Service and run it. Via AWS Console,
+see if ansible-instance is running and SSH port (TCP 22) is open. Using the commands below, see that ansible is 
+installed and all boto frameworks are installed.
+
+```bash
+$ ansible --version
+$ pip list boto | grep boto 
+```
+
+      e. We must assign role by using IAM Role Service on AWS to be able to connect and acsess on other instances on AWS.
+Shortly, we authorize the ansible machine through the Iamrole service to be able to connect and acsess on other instances on AWS.
+
+
+2.    Create a new instance by using Ansible on AWS.
+
+      a. To create a playbook which named is "playbook_1_create_a_new_instance.yml" on ansible instance's /home/ubuntu directory, 
+execute the following processes/ commands in order. 
+
+         -  sudo cat > playbook_1_create_a_new_instance.yml
+         -  copy the index of my playbook (below) into.
+
+```bash
+---
+ - name: Create Ec2 instance
+   hosts: localhost # "localhost" as target will make Ansible to infer it has to make a "local" connection. When you don’t have access to a managed machine, you can use your Ansible host to run playbooks against itself.
+   connection: local # It is to execute the tasks locally on the same host (i.e., the controller) where the playbook is run.
+   gather_facts: False # Gather facts or a 'setup' task will connect to the managed host, run a script that collects a bunch of data, then it will populate the hostvars. Ansible collects pretty much all the information about the remote hosts as it runs a playbook. The task of collecting this remote system information is called as Gathering Facts by ansible and the details collected are generally known as facts or variables
+   tags: provisioning
+
+   vars:
+     key_name: ali_ilk_key
+     instance_type: t2.micro
+     image: ami-0e472ba40eb589f49
+     wait: yes # of true Wait for the instance to reach its desired state before returning.
+     group: monitoring servers 
+     count: 1
+     region: us-east-1 
+     security_group: Security group for grafana server
+     user_data: "{{ lookup('file', 'user-data.sh') }}"
+
+   tasks:
+     - name: Creating security group for grafana server
+       local_action:
+         module: ec2_group
+         name: "{{ security_group }}"
+         description: Security group for grafana server
+         region: "{{ region }}" # The AWS region to use
+         rules: # necesary rules for prometheus and grafana server
+            - proto: tcp
+              from_port: 22
+              to_port: 22
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 8080
+              to_port: 8080
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 80
+              to_port: 80
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 4000
+              to_port: 4000
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 8090
+              to_port: 8090
+              cidr_ip: 0.0.0.0/0
+         rules_egress:
+            - proto: all
+              cidr_ip: 0.0.0.0/0
+       register: basic_firewall
+     - name: Launching the new EC2 Instance which is created for grafana server
+       local_action:  ec2
+                      group={{ security_group }} # Security group (or list of groups) to use with the instance.
+                      instance_type={{ instance_type }} # Instance type to use for the instance
+                      image={{ image }} # ami ID to use for the instance
+                      wait=yes # of true Wait for the instance to reach its desired state before returning.
+                      region={{ region }} # The AWS region to use.
+                      key_name={{ key_name }} # Key pair to use on the instance
+                      count={{ count }} # Number of instances to launch
+                      user_data="{{ user_data }}"
+
+       register: ec2
+     - name: Add Tagging to EC2 instance
+       local_action: ec2_tag resource={{ item.id }} region={{ region }} state=present # A hash/dictionary of tags to add to the new instance or for instances to start/stop by tag. 
+       with_items: "{{ ec2.instances }}"
+       args:
+         tags:
+           Name: New Instance for Grafana Server
+           Monitoring: New Instance for Grafana Server
+```   
+
+      b. Configure default static inventory (host) file by adding “localhost”
+
+         Sudo vi /etc/ansible/hosts
+         [localhost]
+         Local
+
+      c. Create user-data.sh
+
+         -  To create a user data file which named is "user-data.sh" on ansible instance's /home/ubuntu directory
+         -  sudo cat > playbook_1_create_a_new_instance.yml
+         -  copy the index of my user-data schript file (below) into.
+
+#!/bin/bash
+apt-get update
+apt-get upgrade -y
+apt-get install python3.7
+apt install python-pip
+apt-get update
+apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+add-apt-repository \
+   "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+   $(lsb_release -cs) \
+   stable"
+apt-get update
+apt-get install -y docker-ce
+usermod -aG docker ubuntu
+curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+service docker start         
+
+      d. Copy your own “…….”key.pem
+
+         -  To copy your private pem key /home/ubuntu directory
+         -  sudo cat > "your private pem key name.pem"
+         -  copy the index of your private pem key name.pem into.
+
+      e. run "sudo ansible-playbook playbook_1_create_a_new_instance.yml" command on terminal
+      f. check if new instance running or not on AWS Consol
+      g. Check security port and tags
+      h. Open a new terminal for new instance and check if docker and docker compose installed or not by using below commands
+         -  docker --version
+         -  docker-compose --version
+         -  sudo service docker status 
+
+3.    Configure the new instance on AWS by using Ansible.
+
+      a.  Add a new dynamic inventory file and see the dynamic hosts 
+          -  To copy dynamic inventory file which named is aws_ec2.yml to /home/ubuntu directory
+             -  sudo cat > aws_ec2.yml
+             -  copy the index of my aws_ec2.yml into
+          -  To see the dynamic inventory file running hosts' list run the command which is below
+             -  ansible-inventory -i aws_ec2.yml --list
+
+      b.  Create a playbook which named is "playbook_2_configure_instance.yml" on ansible instance's /home/ubuntu directory
+to configure new instance, execute the following processes/ commands in order. 
+
+         -  sudo cat > playbook_2_configure_instance.yml
+         -  copy the index of my playbook (below) into.
+
+```bash
+---
+ - name: Download grafana last version of image and pull docker compose file from github repo and run
+   hosts: all
+   gather_facts: False
+   tags: download grafana image and run docker docker compose file
+   vars_files:
+      - secrets.yml
+   tasks:
+      - name: pull the latest version grafana image to configure grafana container server
+        become: true
+        command: "{{ item }}"
+        with_items:
+           - docker pull grafana/grafana
+      - name: Download the Docker Compose File from the Private GitRepo
+        become: yes
+        git:
+           repo: https://{{gituser}}:{{gitpass}}@github.com/alisorkuncuk/update-a-grafana-server-ansible-git-dockercompose.git
+           dest: /home/ubuntu/docker-compose
+      - name: Run docker-compose up
+        become: true
+        command: "{{ item }}"
+        with_items:
+           - docker-compose -f /home/ubuntu/docker-compose/grafana-docker-compose.yml down
+           - sleep 30
+           - docker-compose -f /home/ubuntu/docker-compose/grafana-docker-compose.yml up -d
+
+      c.  Create secret file which named is secrets.yml for security of cridential
+
+          - To create secret files which named is secrets.yml execute the folloving process and commands
+
+            - ansible-vault create secrets.yml
+            - copy your cridential username and pass
+      
+      d.  run sudo ansible-playbook -i aws_ec2.yml  playbook_2_configure_instance.yml -u ubuntu --private-key=ali_ilk_key.pem --ask-vault-pass command on terminal
+      
+      e. check 4000 port and 8090 port of grafana server running of not
+           
