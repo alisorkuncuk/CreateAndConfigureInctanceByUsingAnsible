@@ -1,0 +1,25 @@
+---
+ - name: Download grafana last version of image and pull docker compose file from github repo and run
+   hosts: all
+   gather_facts: False
+   tags: download grafana image and run docker docker compose file
+   vars_files:
+      - secrets.yml
+   tasks:
+      - name: pull the latest version grafana image to configure grafana container server
+        become: true
+        command: "{{ item }}"
+        with_items:
+           - docker pull grafana/grafana
+      - name: Download the Docker Compose File from the Private GitRepo
+        become: yes
+        git:
+           repo: https://{{gituser}}:{{gitpass}}@github.com/alisorkuncuk/update-a-grafana-server-ansible-git-dockercompose.git
+           dest: /home/ubuntu/docker-compose
+      - name: Run docker-compose up
+        become: true
+        command: "{{ item }}"
+        with_items:
+           - docker-compose -f /home/ubuntu/docker-compose/grafana-docker-compose.yml down
+           - sleep 30
+           - docker-compose -f /home/ubuntu/docker-compose/grafana-docker-compose.yml up -d

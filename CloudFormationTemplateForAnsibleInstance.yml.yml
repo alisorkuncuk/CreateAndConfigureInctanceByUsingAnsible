@@ -1,0 +1,54 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: >
+  This template aims to create an ubuntu instance on AWS with ansible installed on it.
+
+Parameters:
+  KeyPairName:
+    Description: ali_ilk_key.pem
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must one of the existing EC2 KeyPair
+
+Resources:
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Amazon Linux machine
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+  ServerHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0e472ba40eb589f49
+      InstanceType: t2.micro
+      KeyName: !Ref KeyPairName
+      SecurityGroupIds:
+        - !Ref ServerSecurityGroup
+      Tags:                
+        -                        
+          Key: Name
+          Value: !Sub ${AWS::StackName}  
+      UserData:
+        Fn::Base64: 
+          !Sub |
+            #! /bin/bash
+            apt-get update
+            apt-add-repository -y ppa:ansible/ansible
+            apt-get update 
+            apt-get install -y ansible
+            apt install python-pip -y
+            pip install boto boto3
+            apt-get install python-boto -y
+            pip install --upgrade requests==2.20.1
+
+            
+Outputs:
+  WebsiteURL:
+    Value: !Sub 
+      - http://${PublicAddress}
+      - PublicAddress: !GetAtt ServerHost.PublicDnsName
+    Description: Control Node (Ansible Instance)
+ 
